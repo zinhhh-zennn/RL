@@ -1,0 +1,17 @@
+# python
+__pycache__/
+*.pyc
+
+# virtual environment
+venv/
+
+# logs
+logs/
+
+# model files
+*.zip
+*.pt
+*.pth
+
+# system
+.DS_Store
