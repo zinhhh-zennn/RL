@@ -6,39 +6,42 @@ from stable_baselines3.common.monitor import Monitor
 from envs.k8s_env import ServicePlacementEnv
 
 if __name__ == "__main__":
-    os.makedirs("models", exist_ok=True)
+    os.makedirs("models/production", exist_ok=True)
     os.makedirs("logs", exist_ok=True)
 
-    # Scale hệ thống lên: 50 Máy chủ, 20 Microservices
-    env = Monitor(ServicePlacementEnv(num_nodes=50, max_services=20))
-    eval_env = Monitor(ServicePlacementEnv(num_nodes=50, max_services=20))
+    # Scale lên 100 Nodes, 40 Services
+    env = Monitor(ServicePlacementEnv(num_nodes=100, max_services=40))
+    eval_env = Monitor(ServicePlacementEnv(num_nodes=100, max_services=40))
 
     eval_callback = EvalCallback(
         eval_env, 
-        best_model_save_path='./models/cv_project/',
+        best_model_save_path='./models/production/',
         log_path='./logs/', 
-        eval_freq=15000,
+        eval_freq=20000,
         deterministic=True, 
         render=False
     )
 
-    # Tăng trí thông minh (Mạng Neural sâu hơn một chút: 2 lớp 256 nơ-ron)
-    policy_kwargs = dict(activation_fn=torch.nn.ReLU, net_arch=[256, 256])
+    # --- SỰ KHÁC BIỆT ---
+    # Tăng độ sâu mạng Neural lên 3 lớp, mỗi lớp 512 nơ-ron
+    policy_kwargs = dict(
+        activation_fn=torch.nn.ReLU, 
+        net_arch=dict(pi=[512, 512, 512], vf=[512, 512, 512])
+    )
 
     model = PPO(
         "MlpPolicy", 
         env, 
-        learning_rate=0.0003,
-        n_steps=2048,
-        batch_size=128,          
+        learning_rate=0.0001, # Học chậm hơn để phân tích sâu hơn
+        n_steps=4096,         # Nhìn rộng hơn trước khi cập nhật trọng số
+        batch_size=256,          
         policy_kwargs=policy_kwargs,
-        tensorboard_log="./logs/ppo_cv_project/",
+        tensorboard_log="./logs/ppo_production/",
         verbose=1,
-        device="cuda" # Dùng Card màn hình để chạy
+        device="cuda" 
     )
 
-    print("Bắt đầu huấn luyện Đồ án (Dự kiến 1.5 - 2 tiếng)...")
-    # Huấn luyện 1,500,000 steps để đảm bảo AI học được luật Anti-Affinity
-    model.learn(total_timesteps=1_500_000, callback=eval_callback)
+    print("Bắt đầu huấn luyện Production-Grade (Dự kiến 2.5 - 3 tiếng)...")
+    model.learn(total_timesteps=3_000_000, callback=eval_callback)
     
-    print("Hoàn tất! Model đã lưu tại ./models/cv_project/best_model.zip")
+    print("Hoàn tất! Model đã lưu tại ./models/production/best_model.zip")
