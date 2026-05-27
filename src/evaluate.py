@@ -2,13 +2,17 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from stable_baselines3 import PPO
+from sb3_contrib import MaskablePPO as PPO
+from sb3_contrib.common.wrappers import ActionMasker
 from envs.k8s_env import ServicePlacementEnv
 import os
 
 os.makedirs("results", exist_ok=True)
 
-# (GIỮ NGUYÊN 3 hàm run_random, run_first_fit, run_greedy_latency, run_rl_agent như code cũ của bạn)
+# Dạy cho hệ thống cách lấy mặt nạ từ môi trường
+def mask_fn(env):
+    return env.action_masks()
+
 def run_random(env):
     obs, _ = env.reset()
     total_reward = 0
@@ -70,7 +74,10 @@ def run_rl_agent(env, model):
     total_reward = 0
     terminated = False
     while not terminated:
-        action, _ = model.predict(obs, deterministic=True)
+        # Lấy mặt nạ từ môi trường (thông qua unwrapped để xuyên qua ActionMasker)
+        action_masks = env.unwrapped.action_masks()
+        # Ép AI phải nhìn vào mặt nạ khi ra quyết định
+        action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)
         obs, reward, terminated, _, _ = env.step(action)
         total_reward += reward
     return total_reward
@@ -93,7 +100,10 @@ def plot_cluster_utilization(env, title, filename):
     plt.close()
 
 if __name__ == "__main__":
-    env = ServicePlacementEnv(num_nodes=100, max_services=40) 
+    # Bọc môi trường bằng Trọng tài ActionMasker
+    base_env = ServicePlacementEnv(num_nodes=100, max_services=40) 
+    env = ActionMasker(base_env, mask_fn)
+    
     model_path = "models/production/best_model.zip"
     model = PPO.load(model_path)
     

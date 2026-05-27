@@ -77,6 +77,9 @@ class ServicePlacementEnv(gym.Env):
         self.placements = np.full(self.num_services_current, -1)
         self.current_step = 0
         
+        # Thêm biến theo dõi Database để làm Masking
+        self.node_has_db = np.zeros(self.num_nodes, dtype=bool)
+
         return self._get_obs(), {}
 
     def _get_obs(self):
@@ -121,6 +124,9 @@ class ServicePlacementEnv(gym.Env):
                 self.current_cpu[node_idx] -= cpu_req
                 self.current_ram[node_idx] -= ram_req
                 self.placements[current_svc] = node_idx
+
+                if svc_type == 2:
+                    self.node_has_db[node_idx] = True
                 
                 # 3. Tính độ trễ nhân với trọng số băng thông
                 parents = list(self.dag.predecessors(current_svc))
@@ -138,3 +144,34 @@ class ServicePlacementEnv(gym.Env):
             terminated = True
             
         return self._get_obs(), reward, terminated, False, {}
+    
+    def action_masks(self):
+        """
+        Trả về mảng boolean (num_nodes,). True = Được phép đặt, False = Cấm.
+        """
+        mask = np.ones(self.num_nodes, dtype=bool)
+        
+        # Nếu đã duyệt hết service thì trả về mask mặc định
+        if self.current_step >= len(self.sorted_services):
+            return mask
+
+        current_svc = self.sorted_services[self.current_step]
+        svc_type = self.service_types[current_svc]
+        cpu_req = self.cpu_reqs[current_svc]
+        ram_req = self.ram_reqs[current_svc]
+
+        for i in range(self.num_nodes):
+            # LUẬT 1: Cấm nếu Node không còn đủ CPU hoặc RAM
+            if self.current_cpu[i] < cpu_req or self.current_ram[i] < ram_req:
+                mask[i] = False
+            
+            # LUẬT 2: Cấm nếu là Database (type=2) mà Node đó ĐÃ CHỨA Database rồi
+            if svc_type == 2 and self.node_has_db[i]:
+                mask[i] = False
+        
+        # Cơ chế dự phòng: Nếu xui xẻo Cluster bị full 100%, tất cả đều False
+        # thì phải mở khóa lại để tránh crash thuật toán (chấp nhận cho AI bị phạt)
+        if not mask.any():
+            return np.ones(self.num_nodes, dtype=bool)
+
+        return mask
