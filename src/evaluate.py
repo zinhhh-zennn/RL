@@ -13,19 +13,23 @@ os.makedirs("results", exist_ok=True)
 def mask_fn(env):
     return env.action_masks()
 
+# CẬP NHẬT: Các hàm run_* giờ trả về cả mảng điểm tích lũy từng bước (để vẽ Line Chart)
 def run_random(env):
     obs, _ = env.reset()
     total_reward = 0
+    step_rewards = []
     terminated = False
     while not terminated:
         action = env.action_space.sample()
         obs, reward, terminated, _, _ = env.step(action)
         total_reward += reward
-    return total_reward
+        step_rewards.append(total_reward)
+    return total_reward, step_rewards
 
 def run_first_fit(env):
     obs, _ = env.reset()
     total_reward = 0
+    step_rewards = []
     terminated = False
     num_nodes = env.unwrapped.num_nodes
     while not terminated:
@@ -42,11 +46,13 @@ def run_first_fit(env):
                 break
         obs, reward, terminated, _, _ = env.step(action)
         total_reward += reward
-    return total_reward
+        step_rewards.append(total_reward)
+    return total_reward, step_rewards
 
 def run_greedy_latency(env):
     obs, _ = env.reset()
     total_reward = 0
+    step_rewards = []
     terminated = False
     num_nodes = env.unwrapped.num_nodes
     while not terminated:
@@ -67,31 +73,37 @@ def run_greedy_latency(env):
         action = best_node if best_node != -1 else 0
         obs, reward, terminated, _, _ = env.step(action)
         total_reward += reward
-    return total_reward
+        step_rewards.append(total_reward)
+    return total_reward, step_rewards
 
 def run_rl_agent(env, model):
     obs, _ = env.reset()
     total_reward = 0
+    step_rewards = []
     terminated = False
     while not terminated:
-        # Lấy mặt nạ từ môi trường (thông qua unwrapped để xuyên qua ActionMasker)
         action_masks = env.unwrapped.action_masks()
-        # Ép AI phải nhìn vào mặt nạ khi ra quyết định
         action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)
         obs, reward, terminated, _, _ = env.step(action)
         total_reward += reward
-    return total_reward
+        step_rewards.append(total_reward)
+    return total_reward, step_rewards
 
-def plot_cluster_utilization(env, title, filename):
-    """Vẽ Heatmap thể hiện tải của 100 Nodes"""
-    cpu_used = env.unwrapped.node_cpu_cap - env.unwrapped.current_cpu
-    cpu_percent = (cpu_used / env.unwrapped.node_cpu_cap) * 100
-    
-    # Reshape thành lưới 10x10 cho đẹp
-    cpu_matrix = cpu_percent.reshape(10, 10)
+def plot_cluster_utilization(env, title, filename, resource="CPU"):
+    """Vẽ Heatmap thể hiện tải của 100 Nodes (hỗ trợ cả CPU và RAM)"""
+    if resource == "CPU":
+        used = env.unwrapped.node_cpu_cap - env.unwrapped.current_cpu
+        percent = (used / env.unwrapped.node_cpu_cap) * 100
+        cmap_color = "YlOrRd"
+    else:
+        used = env.unwrapped.node_ram_cap - env.unwrapped.current_ram
+        percent = (used / env.unwrapped.node_ram_cap) * 100
+        cmap_color = "PuBu" # RAM dùng màu xanh cho dễ phân biệt
+        
+    matrix = percent.reshape(10, 10)
     
     plt.figure(figsize=(8, 6))
-    sns.heatmap(cpu_matrix, annot=True, fmt=".0f", cmap="YlOrRd", cbar_kws={'label': '% CPU Utilization'})
+    sns.heatmap(matrix, annot=True, fmt=".0f", cmap=cmap_color, cbar_kws={'label': f'% {resource} Utilization'})
     plt.title(title)
     plt.xlabel("Rack ID")
     plt.ylabel("Zone ID")
@@ -99,39 +111,81 @@ def plot_cluster_utilization(env, title, filename):
     plt.savefig(f"results/{filename}", dpi=300)
     plt.close()
 
+def get_std_dev(env):
+    """Tính độ lệch chuẩn tải trọng CPU (Dùng để đo lường Cân bằng tải)"""
+    cpu_used = env.unwrapped.node_cpu_cap - env.unwrapped.current_cpu
+    cpu_percent = (cpu_used / env.unwrapped.node_cpu_cap) * 100
+    return np.std(cpu_percent)
+
 if __name__ == "__main__":
-    # Bọc môi trường bằng Trọng tài ActionMasker
     base_env = ServicePlacementEnv(num_nodes=100, max_services=40) 
     env = ActionMasker(base_env, mask_fn)
+    model = PPO.load("models/production/best_model.zip")
     
-    model_path = "models/production/best_model.zip"
-    model = PPO.load(model_path)
-    
-    # 1. Vẽ Boxplot So sánh
     n_episodes = 100
     results = {"Random": [], "First-Fit (K8s)": [], "Greedy Latency": [], "RL Agent (PPO)": []}
     
+    # Lưu lại hành trình của ván số 42 để vẽ biểu đồ chi tiết
+    trajectories = {}
+    
     print("Đang thi đấu 100 ván...")
     for i in range(n_episodes):
-        env.reset(seed=i); results["Random"].append(run_random(env))
-        env.reset(seed=i); results["First-Fit (K8s)"].append(run_first_fit(env))
-        env.reset(seed=i); results["Greedy Latency"].append(run_greedy_latency(env))
-        env.reset(seed=i); results["RL Agent (PPO)"].append(run_rl_agent(env, model))
+        env.reset(seed=i); rew_rand, traj_rand = run_random(env); results["Random"].append(rew_rand)
+        env.reset(seed=i); rew_ff, traj_ff = run_first_fit(env); results["First-Fit (K8s)"].append(rew_ff)
+        env.reset(seed=i); rew_gr, traj_gr = run_greedy_latency(env); results["Greedy Latency"].append(rew_gr)
+        env.reset(seed=i); rew_rl, traj_rl = run_rl_agent(env, model); results["RL Agent (PPO)"].append(rew_rl)
+        
+        if i == 42:
+            trajectories = {"Random": traj_rand, "First-Fit (K8s)": traj_ff, 
+                            "Greedy Latency": traj_gr, "RL Agent (PPO)": traj_rl}
 
+    # BIỂU ĐỒ 1: Boxplot Tổng quát (Như cũ)
     df = pd.DataFrame(results)
     plt.figure(figsize=(10, 6))
     df.boxplot()
     plt.title("So Sánh Điểm Thưởng (Scale: 100 Nodes, 40 Services)")
     plt.ylabel("Reward")
     plt.savefig("results/boxplot_production.png", dpi=300)
+    plt.close()
     
-    # 2. Sinh Heatmap trực quan cho 1 ván cụ thể (Ván số 42)
+    # BIỂU ĐỒ 2: Biểu đồ đường (Line Chart) - Cumulative Reward
+    plt.figure(figsize=(10, 6))
+    for name, traj in trajectories.items():
+        plt.plot(traj, label=name, linewidth=2)
+    plt.title("Tiến trình Tích lũy Điểm thưởng (Cumulative Reward Trajectory - Ván 42)")
+    plt.xlabel("Bước quyết định (Từng Service được đặt)")
+    plt.ylabel("Tổng điểm thưởng tích lũy")
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.savefig("results/linechart_cumulative_reward.png", dpi=300)
+    plt.close()
+
+    # Thu thập dữ liệu Độ lệch chuẩn để vẽ Biểu đồ Cân bằng tải
+    std_devs = {}
     env.reset(seed=42)
-    run_greedy_latency(env)
-    plot_cluster_utilization(env, "Node CPU Utilization - Greedy (Overloaded spots)", "heatmap_greedy.png")
+    run_first_fit(env); std_devs["First-Fit"] = get_std_dev(env)
+    env.reset(seed=42)
+    run_greedy_latency(env); std_devs["Greedy Latency"] = get_std_dev(env)
+    env.reset(seed=42)
+    run_rl_agent(env, model); std_devs["RL Agent (PPO)"] = get_std_dev(env)
     
+    # BIỂU ĐỒ 3: Biểu đồ Cột (Bar Chart) - Load Balancing Variance
+    plt.figure(figsize=(8, 6))
+    sns.barplot(x=list(std_devs.keys()), y=list(std_devs.values()), hue=list(std_devs.keys()), palette="viridis", legend=False)
+    plt.title("Độ lệch chuẩn tải trọng CPU (Load Balancing Variance)\n* Càng thấp chứng tỏ hệ thống phân bổ càng đồng đều *")
+    plt.ylabel("Độ lệch chuẩn % CPU (Standard Deviation)")
+    plt.savefig("results/barchart_load_balancing.png", dpi=300)
+    plt.close()
+
+    # BIỂU ĐỒ 4 & 5: Heatmap CPU & RAM cho Agent RL
     env.reset(seed=42)
     run_rl_agent(env, model)
-    plot_cluster_utilization(env, "Node CPU Utilization - RL Agent (Balanced Load)", "heatmap_rl.png")
+    plot_cluster_utilization(env, "Node CPU Utilization - RL Agent", "heatmap_rl_cpu.png", resource="CPU")
+    plot_cluster_utilization(env, "Node RAM Utilization - RL Agent", "heatmap_rl_ram.png", resource="RAM")
     
-    print("Hoàn tất! Hãy mở thư mục results/ để xem ảnh Heatmap và Boxplot.")
+    # BIỂU ĐỒ 6: Heatmap CPU cho Greedy (Để so sánh)
+    env.reset(seed=42)
+    run_greedy_latency(env)
+    plot_cluster_utilization(env, "Node CPU Utilization - Greedy (Overloaded spots)", "heatmap_greedy_cpu.png", resource="CPU")
+
+    print("Hoàn tất! Hãy mở thư mục results/ để xem trọn bộ 6 biểu đồ phân tích chuyên sâu.")
